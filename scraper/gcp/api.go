@@ -123,6 +123,16 @@ type MachineType struct {
 	MaximumPersistentDisks       int           `json:"maximumPersistentDisks"`
 	MaximumPersistentDisksSizeGb string        `json:"maximumPersistentDisksSizeGb"`
 	Accelerators                 []Accelerator `json:"accelerators,omitempty"`
+	// BundledLocalSsds is only present for machine types that come with Local
+	// SSD built in (Z3, the -lssd shapes of C3/C3D/C4/C4A/C4D/H4D, and the
+	// accelerator-optimized series). Families where Local SSD is an optional
+	// per-VM attachment omit the field entirely.
+	BundledLocalSsds *BundledLocalSsds `json:"bundledLocalSsds,omitempty"`
+}
+
+type BundledLocalSsds struct {
+	DefaultInterface string `json:"defaultInterface"`
+	PartitionCount   int    `json:"partitionCount"`
 }
 
 type Accelerator struct {
@@ -154,6 +164,9 @@ type MachineSpecs struct {
 	GPUModel    string
 	GPUMemory   int
 	Zones       []string
+	// LocalSSDGB is the bundled Local SSD capacity in GB, 0 when the machine
+	// type has none. Optional (user-attachable) Local SSD is never counted.
+	LocalSSDGB int
 }
 
 // gpuMemoryByModel maps a GCP guestAcceleratorType (the model string the
@@ -173,6 +186,43 @@ var gpuMemoryByModel = map[string]int{
 
 func totalGPUMemory(gpuCount int, gpuModel string) int {
 	return gpuCount * gpuMemoryByModel[gpuModel]
+}
+
+// descriptionLocalSSDRegex extracts the bundled Local SSD disk count from the
+// human-readable machine type description ("4 vCPUs, 16 GB RAM, 1 local ssd").
+// Used as a fallback when the structured bundledLocalSsds field is absent.
+var descriptionLocalSSDRegex = regexp.MustCompile(`(?i)(\d+)\s+local\s+ssd`)
+
+// localSSDPartitionGB returns the size in GB of a single bundled Local SSD
+// partition for a machine type. Every machine series bundles Local SSD in
+// 375 GB partitions except Z3, whose Titanium SSD disks are 3,000 GiB each
+// (https://cloud.google.com/compute/docs/disks/local-ssd).
+func localSSDPartitionGB(machineTypeName string) int {
+	if strings.HasPrefix(strings.ToLower(machineTypeName), "z3-") {
+		return 3000
+	}
+	return 375
+}
+
+// bundledLocalSSDCapacityGB returns the total bundled Local SSD capacity in GB
+// for a machine type, or 0 when the shape has none. Only bundled capacity is
+// reported: families where Local SSD is an optional per-VM attachment
+// (N1/N2/N2D/C2/...) return 0 because attached disks are a user choice, not
+// part of the machine type.
+func bundledLocalSSDCapacityGB(mt MachineType) int {
+	partitions := 0
+	if mt.BundledLocalSsds != nil {
+		partitions = mt.BundledLocalSsds.PartitionCount
+	}
+	if partitions <= 0 {
+		if matches := descriptionLocalSSDRegex.FindStringSubmatch(mt.Description); len(matches) >= 2 {
+			partitions, _ = strconv.Atoi(matches[1])
+		}
+	}
+	if partitions <= 0 {
+		return 0
+	}
+	return partitions * localSSDPartitionGB(mt.Name)
 }
 
 // Fetch all SKUs for Compute Engine with pagination
@@ -482,6 +532,7 @@ func fetchMachineTypes() (map[string]*MachineSpecs, error) {
 						Family:      family,
 						IsSharedCPU: mt.IsSharedCpu,
 						Zones:       []string{zone},
+						LocalSSDGB:  bundledLocalSSDCapacityGB(mt),
 					}
 
 					// Handle GPUs/accelerators
@@ -624,6 +675,74 @@ func parseCUDSKU(sku SKU) (machineFamily string, resourceType string, term strin
 	return machineFamily, resourceType, term, true
 }
 
+// Local SSD usage SKU display names come in two forms: a per-family form used
+// by newer machine series and a generic catch-all form, each with a spot
+// variant:
+//
+//	"C4D Instance Local SSD running in Frankfurt"
+//	"Spot Preemptible C4D Instance Local SSD running in Frankfurt"
+//	"SSD backed Local Storage running in Paris"
+//	"SSD backed Local Storage attached to Spot Preemptible VMs running in Paris"
+//
+// Commitment SKUs ("Commitment v1: C4D Local SSD in ... for 1 Year") and
+// suspended-VM state SKUs ("VM state: preserved local SSD in ...") must not
+// feed baseline pricing; both anchored patterns reject them because the
+// display name does not start with a "<family> Instance Local SSD" or
+// "SSD backed Local Storage" prefix.
+var familyLocalSSDSKURegex = regexp.MustCompile(`(?i)^(?:spot\s+preemptible\s+)?([a-z][a-z0-9]{1,3})\s+instance\s+local\s+ssd\b`)
+var genericLocalSSDSKURegex = regexp.MustCompile(`(?i)^ssd\s+backed\s+local\s+storage\b`)
+
+// parseLocalSSDSKU parses a Local SSD usage SKU. It returns the machine family
+// the SKU is scoped to (uppercased, e.g. "C4D"; empty for the generic
+// "SSD backed Local Storage" SKUs that apply to any family) and whether the
+// SKU carries spot/preemptible rates. Rates are per GiB-month in the catalog;
+// calculateHourlyPrice converts them to per GiB-hour.
+func parseLocalSSDSKU(sku SKU) (machineFamily string, isSpot bool, ok bool) {
+	displayName := sku.DisplayName
+	displayLower := strings.ToLower(displayName)
+
+	// Reservation-scheduling products (DWS calendar mode / flex-start) bill
+	// Local SSD under their own SKUs and must not feed baseline pricing.
+	if strings.Contains(displayLower, "calendar") || strings.Contains(displayLower, "flex") {
+		return "", false, false
+	}
+
+	isSpot = strings.Contains(displayLower, "preemptible") || strings.Contains(displayLower, "spot")
+
+	if matches := familyLocalSSDSKURegex.FindStringSubmatch(displayName); len(matches) >= 2 {
+		return strings.ToUpper(matches[1]), isSpot, true
+	}
+	if genericLocalSSDSKURegex.MatchString(displayName) {
+		return "", isSpot, true
+	}
+	return "", false, false
+}
+
+// skuRegion resolves the region code for a SKU from its geo taxonomy, falling
+// back to the multi-regional grouping named in the display name (e.g.
+// "running in Americas" -> "multi-americas").
+func skuRegion(sku SKU) string {
+	if len(sku.GeoTaxonomy.Regions) > 0 {
+		// Use the first region as a fallback; callers can read full Regions.
+		return sku.GeoTaxonomy.Regions[0]
+	}
+	if sku.GeoTaxonomy.RegionalMetadata != nil {
+		return sku.GeoTaxonomy.RegionalMetadata.Region.Region
+	}
+	if sku.GeoTaxonomy.Type == "TYPE_MULTI_REGIONAL" {
+		displayLower := strings.ToLower(sku.DisplayName)
+		switch {
+		case strings.Contains(displayLower, "americas"):
+			return "multi-americas"
+		case strings.Contains(displayLower, "europe"):
+			return "multi-europe"
+		case strings.Contains(displayLower, "asia"):
+			return "multi-asia"
+		}
+	}
+	return ""
+}
+
 func parseMachineTypeFromSKU(sku SKU) (machineFamily string, resourceType string, region string, isSpot bool, isWindows bool) {
 	displayName := sku.DisplayName
 
@@ -652,24 +771,9 @@ func parseMachineTypeFromSKU(sku SKU) (machineFamily string, resourceType string
 		}
 	}
 
-	// Get region from geo taxonomy.
-	if len(sku.GeoTaxonomy.Regions) > 0 {
-		// Use the first region as a fallback; callers can read full Regions.
-		region = sku.GeoTaxonomy.Regions[0]
-	} else if sku.GeoTaxonomy.RegionalMetadata != nil {
-		region = sku.GeoTaxonomy.RegionalMetadata.Region.Region
-	} else if sku.GeoTaxonomy.Type == "TYPE_MULTI_REGIONAL" {
-		// Use multi-regional as a special "region" identifier
-		// Extract the location from display name (e.g., "running in Americas")
-		displayLower := strings.ToLower(displayName)
-		if strings.Contains(displayLower, "americas") {
-			region = "multi-americas"
-		} else if strings.Contains(displayLower, "europe") {
-			region = "multi-europe"
-		} else if strings.Contains(displayLower, "asia") {
-			region = "multi-asia"
-		}
-	}
+	// Get region from geo taxonomy (multi-regional SKUs resolve to a special
+	// "multi-*" region identifier).
+	region = skuRegion(sku)
 
 	return
 }
