@@ -47,9 +47,14 @@ type CategoryItem struct {
 }
 
 type GeoTaxonomy struct {
-	Type             string            `json:"type"`
-	RegionalMetadata *RegionalMetadata `json:"regionalMetadata,omitempty"`
-	Regions          []string          `json:"regions,omitempty"`
+	Type                  string                 `json:"type"`
+	RegionalMetadata      *RegionalMetadata      `json:"regionalMetadata,omitempty"`
+	MultiRegionalMetadata *MultiRegionalMetadata `json:"multiRegionalMetadata,omitempty"`
+	Regions               []string               `json:"regions,omitempty"`
+}
+
+type MultiRegionalMetadata struct {
+	Regions []RegionInfo `json:"regions"`
 }
 
 type RegionalMetadata struct {
@@ -681,8 +686,13 @@ func parseCUDSKU(sku SKU) (machineFamily string, resourceType string, term strin
 //
 //	"C4D Instance Local SSD running in Frankfurt"
 //	"Spot Preemptible C4D Instance Local SSD running in Frankfurt"
-//	"SSD backed Local Storage running in Paris"
-//	"SSD backed Local Storage attached to Spot Preemptible VMs running in Paris"
+//	"SSD backed Local Storage in Paris"
+//	"SSD backed Local Storage attached to Spot Preemptible VMs in Paris"
+//
+// The generic form's region tail varies ("in <city>", "running in <region>",
+// or none at all for the legacy multi-regional SKUs covering asia-east1,
+// europe-west1, us-central1, us-east1 and us-west1); the prefix-anchored
+// pattern matches all of them.
 //
 // Commitment SKUs ("Commitment v1: C4D Local SSD in ... for 1 Year") and
 // suspended-VM state SKUs ("VM state: preserved local SSD in ...") must not
@@ -721,6 +731,24 @@ func parseLocalSSDSKU(sku SKU) (machineFamily string, isSpot bool, ok bool) {
 // skuRegion resolves the region code for a SKU from its geo taxonomy, falling
 // back to the multi-regional grouping named in the display name (e.g.
 // "running in Americas" -> "multi-americas").
+// multiRegionalMetadataRegions returns the explicit region list of a
+// multi-regional SKU. The legacy generic Local SSD SKUs ("SSD backed Local
+// Storage", no region tail in the name) scope to asia-east1, europe-west1,
+// us-central1, us-east1 and us-west1 only via this metadata — their display
+// names carry no regional grouping keyword for skuRegion to map.
+func multiRegionalMetadataRegions(sku SKU) []string {
+	if sku.GeoTaxonomy.MultiRegionalMetadata == nil {
+		return nil
+	}
+	regions := make([]string, 0, len(sku.GeoTaxonomy.MultiRegionalMetadata.Regions))
+	for _, r := range sku.GeoTaxonomy.MultiRegionalMetadata.Regions {
+		if r.Region != "" {
+			regions = append(regions, r.Region)
+		}
+	}
+	return regions
+}
+
 func skuRegion(sku SKU) string {
 	if len(sku.GeoTaxonomy.Regions) > 0 {
 		// Use the first region as a fallback; callers can read full Regions.

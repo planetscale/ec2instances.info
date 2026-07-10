@@ -72,6 +72,20 @@ func shouldUseSKUForPricing(sku SKU, isSpot bool, displayLower string) bool {
 	return true
 }
 
+// shouldUseLocalSSDSKUForPricing gates Local SSD usage SKUs. Unlike instance
+// SKUs, spot cannot be validated against the taxonomy: Google categorizes the
+// generic "SSD backed Local Storage attached to Spot Preemptible VMs" SKUs as
+// "On Demand", so the display name (already parsed by parseLocalSSDSKU) is
+// authoritative for spot. Commitment/reservation-style categories are still
+// excluded as a backstop to parseLocalSSDSKU's display-name anchoring.
+func shouldUseLocalSSDSKUForPricing(sku SKU, displayLower string) bool {
+	if strings.Contains(displayLower, "sole tenancy") {
+		return false
+	}
+	return !taxonomyContainsAny(taxonomyValues(sku),
+		"commit", "cud", "discount", "sustained", "reservation", "reserved", "saving")
+}
+
 func targetRegionsForSKU(sku SKU, fallbackRegion string) []string {
 	if len(sku.GeoTaxonomy.Regions) > 0 {
 		return sku.GeoTaxonomy.Regions
@@ -287,7 +301,7 @@ func processGCPData(skus []SKU, pricing map[string]PriceInfo, machineSpecs map[s
 		// core/ram parse. Local SSD commitment SKUs never reach this point:
 		// they contain "commitment v" and are consumed (and dropped) above.
 		if ssdFamily, ssdSpot, isLocalSSD := parseLocalSSDSKU(sku); isLocalSSD {
-			if !shouldUseSKUForPricing(sku, ssdSpot, displayLower) {
+			if !shouldUseLocalSSDSKUForPricing(sku, displayLower) {
 				skippedByTaxonomyCount++
 				continue
 			}
@@ -297,7 +311,15 @@ func processGCPData(skus []SKU, pricing map[string]PriceInfo, machineSpecs map[s
 			}
 			localSSDSKUCount++
 
-			for _, targetRegion := range targetRegionsForSKU(sku, skuRegion(sku)) {
+			targetRegions := targetRegionsForSKU(sku, skuRegion(sku))
+			if len(targetRegions) == 0 {
+				// The legacy generic SKUs ("SSD backed Local Storage" with no
+				// region tail) are multi-regional with the region list only
+				// in multiRegionalMetadata and no grouping keyword in the
+				// display name for skuRegion to resolve.
+				targetRegions = multiRegionalMetadataRegions(sku)
+			}
+			for _, targetRegion := range targetRegions {
 				key := localSSDKey{family: ssdFamily, region: targetRegion, isSpot: ssdSpot}
 				ssdData[key] = append(ssdData[key], price)
 
