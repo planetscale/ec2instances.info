@@ -203,6 +203,80 @@ func TestProcessGCPDataLocalSSDPricing(t *testing.T) {
 	assertPrice(t, "lssd spot", lssdLinux.Spot, wantLssdSpot)
 }
 
+// TestProcessGCPDataLocalSSDLegacyRegions mirrors the live catalog metadata
+// for the five legacy regions (asia-east1, europe-west1, us-central1,
+// us-east1, us-west1): the generic Local SSD SKUs there have no region tail
+// in the display name and scope regions only via multiRegionalMetadata, and
+// Google categorizes even the Spot-attached variant's taxonomy as
+// "On Demand" — the two properties the SSD path must handle explicitly.
+func TestProcessGCPDataLocalSSDLegacyRegions(t *testing.T) {
+	const region = "us-central1"
+
+	odCore := 0.03398
+	odRam := 0.00456
+	spotCore := 0.00885
+	spotRam := 0.00119
+	ssdGenericMonthly := 0.08
+	ssdSpotMonthly := 0.0389
+
+	legacyGeo := GeoTaxonomy{
+		Type: "TYPE_MULTI_REGIONAL",
+		MultiRegionalMetadata: &MultiRegionalMetadata{
+			Regions: []RegionInfo{
+				{Region: "asia-east1"}, {Region: "europe-west1"},
+				{Region: "us-central1"}, {Region: "us-east1"}, {Region: "us-west1"},
+			},
+		},
+	}
+	onDemandTaxonomy := ProductTaxonomy{TaxonomyCategories: []CategoryItem{
+		{Category: "GCP"}, {Category: "Compute"}, {Category: "Local SSD"}, {Category: "On Demand"},
+	}}
+
+	skus := []SKU{
+		onDemandSKU("od-core", "C3 Instance Core running in Iowa", []string{region}),
+		onDemandSKU("od-ram", "C3 Instance Ram running in Iowa", []string{region}),
+		onDemandSKU("spot-core", "Spot Preemptible C3 Instance Core running in Iowa", []string{region}),
+		onDemandSKU("spot-ram", "Spot Preemptible C3 Instance Ram running in Iowa", []string{region}),
+		{SkuId: "ssd-generic", DisplayName: "SSD backed Local Storage", GeoTaxonomy: legacyGeo, ProductTaxonomy: onDemandTaxonomy},
+		{SkuId: "ssd-spot", DisplayName: "SSD backed Local Storage attached to Spot Preemptible VMs", GeoTaxonomy: legacyGeo, ProductTaxonomy: onDemandTaxonomy},
+	}
+
+	pricing := map[string]PriceInfo{
+		"od-core":     usdRate("h", odCore),
+		"od-ram":      usdRate("giby.h", odRam),
+		"spot-core":   usdRate("h", spotCore),
+		"spot-ram":    usdRate("giby.h", spotRam),
+		"ssd-generic": usdRate("giby.mo", ssdGenericMonthly),
+		"ssd-spot":    usdRate("giby.mo", ssdSpotMonthly),
+	}
+
+	const vcpu = 8
+	const memGB = 32.0
+	const ssdGB = 750
+	machineSpecs := map[string]*MachineSpecs{
+		"c3-standard-8-lssd": {
+			VCPU:       vcpu,
+			MemoryGB:   memGB,
+			Family:     "Compute optimized",
+			LocalSSDGB: ssdGB,
+		},
+	}
+
+	instances := processGCPData(skus, pricing, machineSpecs, map[string]string{region: "Iowa"})
+
+	lssd, ok := instances["c3-standard-8-lssd"]
+	if !ok {
+		t.Fatalf("expected c3-standard-8-lssd instance to be built")
+	}
+	lssdLinux := linuxPricing(t, lssd, region)
+
+	wantOnDemand := float64(vcpu)*odCore + memGB*odRam + ssdGB*(ssdGenericMonthly/730)
+	wantSpot := float64(vcpu)*spotCore + memGB*spotRam + ssdGB*(ssdSpotMonthly/730)
+
+	assertPrice(t, "lssd ondemand (legacy multi-regional SKU)", lssdLinux.OnDemand, wantOnDemand)
+	assertPrice(t, "lssd spot (On Demand taxonomy)", lssdLinux.Spot, wantSpot)
+}
+
 func linuxPricing(t *testing.T, instance *GCPInstance, region string) *GCPPricingData {
 	t.Helper()
 	regionPricing, ok := instance.Pricing[region]
