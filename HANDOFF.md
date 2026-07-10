@@ -127,16 +127,20 @@ should be well above zero.
 
 ### 4c. Validate the emitted JSON
 
-Expected **us-central1 on-demand (Linux) hourly** prices, hand-verified
-against Google's published pricing on 2026-07-10:
+Expected **us-central1 on-demand (Linux) hourly** prices. Originally
+hand-verified against Google's published pricing on 2026-07-10; three rows
+corrected the same day against the live billing catalog (the billing source
+of truth): the c4d rows had misread the Americas core rate (0.0327035, not
+0.0337035), and c3-standard-8-lssd bundles 2×375 GiB per the machineTypes
+API, not 375:
 
 | instance_type | expected hourly (USD) |
 |---|---|
-| `c4d-standard-8` | ≈ 0.377982 |
-| `c4d-standard-8-lssd` | ≈ 0.460174 |
+| `c4d-standard-8` | 0.369991 |
+| `c4d-standard-8-lssd` | ≈ 0.452183 |
 | `c4-standard-8-lssd` | ≈ 0.477532 |
 | `c3-standard-8` | 0.403216 |
-| `c3-standard-8-lssd` | ≈ 0.444312 |
+| `c3-standard-8-lssd` | ≈ 0.485408 (spot ≈ 0.134014) |
 | `c2-standard-8` | 0.417616 |
 | `m1-megamem-96` | 10.65216 |
 | `n4a-standard-8` | 0.308 |
@@ -170,18 +174,35 @@ Also verify:
   price is core+RAM(+SSD) only. Pre-existing upstream limitation; do NOT
   fix in these PRs.
 
-## 5. Known cosmetic issue
+## 5. Live validation results (2026-07-10)
 
-The comment block above `familyLocalSSDSKURegex` (`scraper/gcp/api.go`,
-~lines 699-712) gives the generic SKU examples as
-"`SSD backed Local Storage running in Paris`" / "`...attached to Spot
-Preemptible VMs running in Paris`". Live catalog names also appear as
-"`SSD backed Local Storage`" / "`SSD backed Local Storage in <City>`" /
-"`SSD backed Local Storage attached to Spot Preemptible VMs [in <City>]`"
-— i.e. the "running in <region>" tail is not always present. The regex is
-prefix-anchored (`^ssd\s+backed\s+local\s+storage\b`) so it handles all
-forms correctly; only the comment is stale. Fix the comment if you touch
-that code, otherwise leave it.
+A full GCP-only scrape ran against live APIs and the output was validated
+against §4c plus a pre-fix baseline scrape from fork `main` (f925996).
+**Result: PASS** — all §4c prices match to the digit, all 98 bundled-SSD
+shapes have `local_ssd`/`local_ssd_size` populated, spot/CUD behave as
+specified, attachable-SSD families are byte-identical to the baseline, and
+158 instances are new with zero regressions.
+
+The first live run exposed two bugs in the SSD fix that unit fixtures
+missed (both fixed in `gcp: resolve legacy multi-regional Local SSD SKUs
+and admit spot storage SKUs` on `gcp-local-ssd-pricing`, merged here):
+
+1. The legacy generic SKUs ("`SSD backed Local Storage`", no region tail)
+   scope to asia-east1/europe-west1/us-central1/us-east1/us-west1 only via
+   `geoTaxonomy.multiRegionalMetadata`, which the scraper never read — C3,
+   C3D, A2 and A3 (no per-family SSD SKUs) got no SSD component in those
+   five regions.
+2. Google's product taxonomy categorizes the generic spot SSD SKUs as
+   "On Demand", so the spot-taxonomy gate rejected them — spot prices never
+   included the SSD component for those families anywhere.
+
+Family absences confirmed benign: M4N, X4 and A4X have zero public billing
+SKUs; A4 bills as "Nvidia B200 (1 gpu slice)" SKUs with no Instance
+Core/Ram SKUs, so the core+RAM model cannot price it (same pre-existing
+accelerator limitation as A2/A3/G2).
+
+The formerly stale comment above `familyLocalSSDSKURegex` now documents the
+variable region tail of the generic SKU form.
 
 ## 6. PR mechanics
 
