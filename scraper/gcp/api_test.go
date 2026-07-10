@@ -28,6 +28,105 @@ func TestGPUMemoryByModel(t *testing.T) {
 	}
 }
 
+// TestDetermineMachineFamily covers every currently-shipping GCP machine
+// series, including the ones previously missing from the prefix list (C4D,
+// C4N, H4D, M4N, A4, A4X, G4). Series without an explicit prefix must fall
+// back to General purpose.
+func TestDetermineMachineFamily(t *testing.T) {
+	cases := map[string]string{
+		// General purpose
+		"e2-standard-4":  "General purpose",
+		"n1-standard-8":  "General purpose",
+		"n2-standard-8":  "General purpose",
+		"n2d-standard-8": "General purpose",
+		"n4-standard-8":  "General purpose",
+		"n4a-standard-8": "General purpose",
+		"n4d-standard-8": "General purpose",
+		"t2a-standard-8": "General purpose",
+		"t2d-standard-8": "General purpose",
+		// Compute optimized
+		"c2-standard-8":    "Compute optimized",
+		"c2d-standard-8":   "Compute optimized",
+		"c3-standard-8":    "Compute optimized",
+		"c3d-standard-8":   "Compute optimized",
+		"c4-standard-8":    "Compute optimized",
+		"c4a-standard-8":   "Compute optimized",
+		"c4d-standard-8":   "Compute optimized",
+		"c4n-standard-8":   "Compute optimized",
+		"h3-standard-88":   "Compute optimized",
+		"h4d-standard-192": "Compute optimized",
+		// Memory optimized (highmem/megamem/ultramem variants match the
+		// contains checks; prefixes cover the rest)
+		"c4d-highmem-8":   "Memory optimized",
+		"m1-megamem-96":   "Memory optimized",
+		"m2-ultramem-208": "Memory optimized",
+		"m3-megamem-64":   "Memory optimized",
+		"m4-hypermem-16":  "Memory optimized",
+		"m4n-hypermem-16": "Memory optimized",
+		"x4-megamem-960":  "Memory optimized",
+		// Accelerator optimized
+		"a2-highgpu-1g":  "Accelerator optimized",
+		"a3-highgpu-8g":  "Accelerator optimized",
+		"a4-highgpu-8g":  "Accelerator optimized",
+		"a4x-highgpu-4g": "Accelerator optimized",
+		"g2-standard-4":  "Accelerator optimized",
+		"g4-standard-48": "Accelerator optimized",
+		// Storage optimized (z3-highmem-* hits the highmem check first, so
+		// only non-highmem shapes reach the z3- prefix)
+		"z3-standard-88": "Storage optimized",
+	}
+
+	for name, want := range cases {
+		if got := determineMachineFamily(name); got != want {
+			t.Errorf("determineMachineFamily(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// TestParseMachineTypeFromSKU verifies SKU display-name parsing, in
+// particular the family tokens that were previously missing from
+// machineTypeRegex (which caused whole series to be dropped from the dataset
+// for lack of pricing) and the legacy C2/M1 naming fallback.
+func TestParseMachineTypeFromSKU(t *testing.T) {
+	cases := []struct {
+		display      string
+		wantFamily   string
+		wantResource string
+		wantSpot     bool
+	}{
+		{"N1 Predefined Instance Ram running in Zurich", "N1", "ram", false},
+		{"Spot Preemptible E2 Instance Core running in Paris", "E2", "core", true},
+		{"C4A Arm Instance Core running in Northern Virginia", "C4A", "core", false},
+		{"C4D Instance Core running in Americas", "C4D", "core", false},
+		{"C4D Instance Ram running in Tokyo", "C4D", "ram", false},
+		{"C4N Instance Core running in Iowa", "C4N", "core", false},
+		{"N4A Instance Ram running in Iowa", "N4A", "ram", false},
+		{"M4N Instance Core running in Frankfurt", "M4N", "core", false},
+		{"H4D Instance Core running in Iowa", "H4D", "core", false},
+		{"X4 Instance Ram running in Frankfurt", "X4", "ram", false},
+		{"A4 Instance Core running in Iowa", "A4", "core", false},
+		{"A4X Instance Core running in Iowa", "A4X", "core", false},
+		{"G4 Instance Ram running in Iowa", "G4", "ram", false},
+		// Legacy first-generation naming with no family token.
+		{"Compute optimized Core running in Americas", "C2", "core", false},
+		{"Compute optimized Ram running in Americas", "C2", "ram", false},
+		{"Spot Preemptible Compute optimized Core running in Paris", "C2", "core", true},
+		{"Memory-optimized Instance Core running in Northern Virginia", "M1", "core", false},
+		{"Memory-optimized Instance Ram running in Tokyo", "M1", "ram", false},
+		// The M2 surcharge SKU must not be attributed to M1 baseline rates.
+		{"Memory Optimized Upgrade Premium for Memory-optimized Instance Core running in Singapore", "", "", false},
+	}
+
+	for _, tc := range cases {
+		family, resource, _, isSpot, _ := parseMachineTypeFromSKU(SKU{DisplayName: tc.display})
+		if family != tc.wantFamily || resource != tc.wantResource || isSpot != tc.wantSpot {
+			t.Errorf("parseMachineTypeFromSKU(%q) = (%q, %q, spot=%v), want (%q, %q, spot=%v)",
+				tc.display, family, resource, isSpot,
+				tc.wantFamily, tc.wantResource, tc.wantSpot)
+		}
+	}
+}
+
 func TestTotalGPUMemory(t *testing.T) {
 	cases := []struct {
 		name     string
