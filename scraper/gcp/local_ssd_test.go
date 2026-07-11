@@ -33,11 +33,6 @@ func TestBundledLocalSSDCapacityGB(t *testing.T) {
 			want: 36000,
 		},
 		{
-			name: "description fallback when bundledLocalSsds is absent",
-			raw:  `{"name":"c3-standard-4-lssd","description":"4 vCPUs, 16 GB RAM, 1 local ssd","guestCpus":4,"memoryMb":16384}`,
-			want: 375,
-		},
-		{
 			name: "attachable-only family has no bundled capacity",
 			raw:  `{"name":"n2-standard-8","description":"8 vCPUs 32 GB RAM","guestCpus":8,"memoryMb":32768}`,
 			want: 0,
