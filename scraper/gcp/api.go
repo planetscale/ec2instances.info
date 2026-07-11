@@ -193,11 +193,6 @@ func totalGPUMemory(gpuCount int, gpuModel string) int {
 	return gpuCount * gpuMemoryByModel[gpuModel]
 }
 
-// descriptionLocalSSDRegex extracts the bundled Local SSD disk count from the
-// human-readable machine type description ("4 vCPUs, 16 GB RAM, 1 local ssd").
-// Used as a fallback when the structured bundledLocalSsds field is absent.
-var descriptionLocalSSDRegex = regexp.MustCompile(`(?i)(\d+)\s+local\s+ssd`)
-
 // localSSDPartitionGB returns the size in GB of a single bundled Local SSD
 // partition for a machine type. Every machine series bundles Local SSD in
 // 375 GB partitions except Z3, whose Titanium SSD disks are 3,000 GiB each
@@ -218,11 +213,6 @@ func bundledLocalSSDCapacityGB(mt MachineType) int {
 	partitions := 0
 	if mt.BundledLocalSsds != nil {
 		partitions = mt.BundledLocalSsds.PartitionCount
-	}
-	if partitions <= 0 {
-		if matches := descriptionLocalSSDRegex.FindStringSubmatch(mt.Description); len(matches) >= 2 {
-			partitions, _ = strconv.Atoi(matches[1])
-		}
 	}
 	if partitions <= 0 {
 		return 0
@@ -732,10 +722,14 @@ func parseLocalSSDSKU(sku SKU) (machineFamily string, isSpot bool, ok bool) {
 // back to the multi-regional grouping named in the display name (e.g.
 // "running in Americas" -> "multi-americas").
 // multiRegionalMetadataRegions returns the explicit region list of a
-// multi-regional SKU. The legacy generic Local SSD SKUs ("SSD backed Local
-// Storage", no region tail in the name) scope to asia-east1, europe-west1,
-// us-central1, us-east1 and us-west1 only via this metadata — their display
-// names carry no regional grouping keyword for skuRegion to map.
+// multi-regional SKU. Nearly all Local SSD SKUs are regional, with the region
+// resolvable from the display name ("SSD backed Local Storage in Milan").
+// The exception is Google's five original regions (asia-east1, europe-west1,
+// us-central1, us-east1, us-west1): they predate per-region SKU naming and
+// Google never retro-created regional SKUs for them, so their generic Local
+// SSD price exists only on the bare legacy SKUs ("SSD backed Local Storage"
+// and its Spot Preemptible variant), whose region list lives solely in this
+// metadata.
 func multiRegionalMetadataRegions(sku SKU) []string {
 	if sku.GeoTaxonomy.MultiRegionalMetadata == nil {
 		return nil
