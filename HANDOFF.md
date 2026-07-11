@@ -71,8 +71,7 @@ run should exercise.
    `parseLocalSSDSKU` (`api.go:721`) buckets Local SSD usage SKUs
    (intercepted before the instance gate at `scrape.go:283-313`),
    `bundledLocalSSDCapacityGB` (`api.go:212`) reads capacity from the
-   machineTypes API (`bundledLocalSsds.partitionCount`, with a
-   description-string fallback matching "`N local ssd`"), and the SSD
+   machineTypes API (`bundledLocalSsds.partitionCount`), and the SSD
    component is folded into the shape price at `scrape.go:516-520`.
    Z3 partitions are 3,000 GiB; every other series is 375 GB
    (`localSSDPartitionGB`, `api.go:200`).
@@ -158,12 +157,11 @@ Also verify:
 
 ### 4d. Things to watch / known unknowns
 
-- **`bundledLocalSsds.partitionCount` population**: unit fixtures assume the
-  machineTypes API returns it for `-lssd`/Z3/A3 shapes. If the live API
-  omits it, the description-string fallback ("`N local ssd`",
-  `descriptionLocalSSDRegex`, `api.go:194`) should catch it — confirm one
-  or the other actually fired (a shape with `local_ssd_size: 0` that should
-  have SSD means both failed).
+- **`bundledLocalSsds.partitionCount` population**: verified live 2026-07 —
+  every bundled-SSD machine type populates the field (98/98 in
+  us-central1-a), so the description-string fallback originally shipped
+  here was removed as dead code (a shape with `local_ssd_size: 0` that
+  should have SSD means the field went missing).
 - **X4 / H4D / A4X may not appear** even after the fix — they may lack
   public SKUs or be invisible to your project/zones. Absence is not
   necessarily a bug; check whether the billing catalog returns SKUs for them.
