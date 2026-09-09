@@ -51,7 +51,7 @@
         "@types/node": "^24",
         "@types/react": "^18",
         "@types/react-dom": "^18",
-        "@vitest/coverage-v8": "^4.0.15",
+        "@vitest/coverage-v8": "^4.1.11",
         "axe-core": "^4.11.0",
         "fast-xml-parser": "^5.2.5",
         "jsdom": "^27.2.0",
@@ -60,6 +60,6 @@
         "tsx": "^4.19.3",
         "tw-animate-css": "^1.2.9",
         "typescript": "^5",
-        "vitest": "^4.0.15"
+        "vitest": "^4.1.11"
     }
 }
